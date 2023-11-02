@@ -38,7 +38,7 @@ AC_SUBST([COMMON_CFLAGS])
 EXTRA_CFLAGS64="-m64 -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2"
 AC_SUBST([EXTRA_CFLAGS64])
 
-EXTRA_CFLAGS32="-m32"
+EXTRA_CFLAGS32="-m32 -L /usr/lib32"
 AC_SUBST([EXTRA_CFLAGS32])
 
 COMMON_LDFLAGS="-ggdb3"

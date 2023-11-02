@@ -196,7 +196,7 @@ static int task_load_segment(struct task *task, const char *name,
 // - setup task 'rip'
 static int task_load(struct task *task, const char *name, uint8_t *binary, size_t size)
 {
-    struct kernel_config *config = (struct kernel_config *)KERNEL_INFO;
+//    struct kernel_config *config = (struct kernel_config *)KERNEL_INFO;
     struct elf64_header *elf_header = (struct elf64_header *)binary;
 
     if (elf_header->e_magic != ELF_MAGIC) {

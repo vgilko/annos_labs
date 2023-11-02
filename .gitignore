@@ -61,3 +61,5 @@ Makefile
 Makefile.part
 aclocal.m4
 .vscode/c_cpp_properties.json
+
+.idea
