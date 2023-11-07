@@ -13,8 +13,7 @@
 #include "kernel/misc/util.h"
 #include "kernel/loader/config.h"
 
-struct bios_mmap_entry
-{
+struct bios_mmap_entry {
     uint64_t base_addr;
     uint64_t addr_len;
     uint32_t type;
@@ -22,8 +21,7 @@ struct bios_mmap_entry
 };
 
 // Describe gdtr for long mode
-struct gdtr
-{
+struct gdtr {
     uint16_t limit;
     uint32_t base;
     uint32_t zero;
@@ -37,7 +35,7 @@ static uint64_t max_physical_address;
 static uint8_t *free_memory = end;
 
 static struct page *pages;
-//static uint64_t pages_cnt;
+static uint64_t pages_cnt;
 
 pml4e_t *pml4;
 
@@ -45,6 +43,7 @@ struct descriptor *gdt;
 struct gdtr gdtr;
 
 void loader_panic(const char *fmt, ...);
+
 panic_t panic = loader_panic;
 
 // Loader uses this struct to pass some
@@ -52,8 +51,11 @@ panic_t panic = loader_panic;
 struct kernel_config *config;
 
 void *loader_alloc(uint64_t size, uint32_t align);
+
 uint64_t loader_detect_memory(struct bios_mmap_entry *mm, uint32_t cnt);
+
 int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_cnt);
+
 int loader_map_section(uint64_t va, uintptr_t pa, uint64_t len, bool hard);
 
 bool page_is_available(uint64_t paddr, struct bios_mmap_entry *mm, uint32_t cnt);
@@ -61,36 +63,45 @@ bool page_is_available(uint64_t paddr, struct bios_mmap_entry *mm, uint32_t cnt)
 struct descriptor *loader_init_gdt(void);
 
 int loader_read_kernel(uint64_t *kernel_entry_point);
+
 void loader_enter_long_mode(uint64_t kernel_entry_point);
 
 // Why this address? See 'boot/boot.S'
 #define BOOT_MMAP_ADDR 0x7e00
 
-void loader_main(void)
-{
-    terminal_init();
-
-#if LAB >= 2
+int init_kernel() {
     // Next two parameters are prepared by the first loader
-    struct bios_mmap_entry *mm = (struct bios_mmap_entry *)BOOT_MMAP_ADDR;
-    uint32_t cnt = *((uint32_t *)BOOT_MMAP_ADDR - 1);
+    struct bios_mmap_entry *memory_map = (struct bios_mmap_entry *) BOOT_MMAP_ADDR;
+    uint32_t cnt = *((uint32_t *) BOOT_MMAP_ADDR - 1);
 
     uint64_t kernel_entry_point;
-    if (loader_read_kernel(&kernel_entry_point) != 0)
-        goto something_bad;
+    if (loader_read_kernel(&kernel_entry_point) != 0) {
+        terminal_printf("Unable to read kernel\n");
+        return -1;
+    }
 
-    uint64_t pages_cnt = loader_detect_memory(mm, cnt);
-    if (loader_init_memory(mm, cnt, pages_cnt) != 0)
-        goto something_bad;
+    uint64_t pages_cnt = loader_detect_memory(memory_map, cnt);
+    if (loader_init_memory(memory_map, cnt, pages_cnt) != 0) {
+        terminal_printf("Unable to init memory\n");
+        return -1;
+    }
 
     loader_enter_long_mode(kernel_entry_point);
 
-something_bad:
-#endif
+    return 0;
+}
+
+void loader_main(void) {
+    terminal_init();
+
+    if (init_kernel() != 0) {
+        goto something_bad;
+    }
+
+    something_bad:
     terminal_printf("Stop loading, hang\n");
 
-    while (1)
-    {
+    while (1) {
         /*do nothing*/
     }
 }
@@ -101,15 +112,13 @@ something_bad:
 // - save current value of memory_chunk as allocated chunk, don't forget cast to (void*)
 // - increase free_memory to record allocation
 // - return allocated memory_chunk
-void *loader_alloc(uint64_t size, uint32_t align)
-{
-    (void)size;
-    (void)align;
-
+void *loader_alloc(uint64_t size, uint32_t align) {
     uint8_t *memory_chunk;
-    (void)memory_chunk;
 
-    return NULL;
+    memory_chunk = (void *) ROUND_UP((uint32_t) free_memory, align);
+    free_memory = memory_chunk + size;
+
+    return memory_chunk;
 }
 
 // LAB2 Instruction:
@@ -122,9 +131,44 @@ void *loader_alloc(uint64_t size, uint32_t align)
 // -- load kernel into physical addresses instead of virtual (drop >4Gb part of virtual address)
 // -- use loader_alloc
 #define KERNEL_BASE_DISK_SECTOR 2048 // 1Mb
-int loader_read_kernel(uint64_t *kernel_entry_point)
-{
-    *kernel_entry_point = 0;
+
+int loader_read_kernel(uint64_t *kernel_entry_point) {
+    struct elf64_header *elf_header = loader_alloc(sizeof(*elf_header), PAGE_SIZE);
+
+    bool is_read_error_occurred = disk_io_read_segment((uint32_t) elf_header, ATA_SECTOR_SIZE, KERNEL_BASE_DISK_SECTOR);
+    if (is_read_error_occurred) {
+        terminal_printf("Unable to read ELF header\n");
+        return -1;
+    }
+
+    if (elf_header->e_magic != ELF_MAGIC) {
+        terminal_printf("ELF magic mismatch. Current magic = %u", elf_header->e_magic);
+        return -1;
+    }
+
+    struct elf64_program_header *header_pointer = ELF64_PHEADER_FIRST(elf_header);
+    while (header_pointer < ELF64_PHEADER_LAST(elf_header)) {
+        // Отрбасываем старшие байты виртуального адреса, для корректного маппинга в физический
+        header_pointer->p_va &= 0xFFFFFFFFull; // лучше через отдельную переменную
+
+        // адрес начала сегмента, который будем читать
+        uint32_t segment_start_addr = (header_pointer->p_offset / ATA_SECTOR_SIZE) + KERNEL_BASE_DISK_SECTOR;
+        bool is_error_on_read_segment = disk_io_read_segment(header_pointer->p_va, header_pointer->p_memsz,
+                                                             segment_start_addr);
+        if (is_error_on_read_segment) {
+            terminal_printf("Unable to read segment [%u]\n", segment_start_addr);
+            return -1;
+        }
+
+        // сдвигаем указатель на свободную память, если её недостаточно
+        if (PADDR(free_memory) < PADDR(header_pointer->p_va + header_pointer->p_memsz)) {
+            free_memory = (uint8_t * )(uintptr_t)(header_pointer->p_va + header_pointer->p_memsz);
+        }
+
+        ++header_pointer;
+    }
+
+    *kernel_entry_point = elf_header->e_entry;
 
     return 0;
 }
@@ -135,22 +179,28 @@ int loader_read_kernel(uint64_t *kernel_entry_point)
 // - count total 'pages_cnt', using 'max_physical_address' and 'PAGE_SIZE'
 // - use ROUND_DOWN macros
 #define MEMORY_TYPE_FREE 1
-uint64_t loader_detect_memory(struct bios_mmap_entry *memory_map, uint32_t cnt)
-{
-    (void)memory_map;
-    (void)cnt;
 
+uint64_t loader_detect_memory(struct bios_mmap_entry *memory_map, uint32_t memory_map_length) {
     max_physical_address = 0;
-    uint64_t pages_cnt = 0;
+
+    for (uint32_t i = 0; i < memory_map_length; i++) {
+        bool is_free_memory = memory_map[i].type == MEMORY_TYPE_FREE;
+        bool is_struct_will_fit = memory_map[i].base_addr + memory_map[i].addr_len < max_physical_address;
+
+        if (is_free_memory && is_struct_will_fit) {
+            max_physical_address = memory_map[i].base_addr + memory_map[i].addr_len;
+        }
+    }
+
+    pages_cnt = ROUND_DOWN(max_physical_address, PAGE_SIZE) / PAGE_SIZE;
 
     terminal_printf("Available memory: %u Kb (%u pages)\n",
-                    (uint32_t)(max_physical_address / 1024), (uint32_t)pages_cnt);
+                    (uint32_t)(max_physical_address / 1024), (uint32_t) pages_cnt);
 
     return pages_cnt;
 }
 
-int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_cnt)
-{
+int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_cnt) {
     static struct mmap_state state;
 
     config = loader_alloc(sizeof(*config), PAGE_SIZE);
@@ -173,18 +223,16 @@ int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_
     config->gdt.ptr = gdt;
 
     // Initialize 'mmap_state'
-    state.free = (struct mmap_free_pages){NULL};
+    state.free = (struct mmap_free_pages) {NULL};
     state.pages_cnt = pages_cnt;
     state.pages = pages;
     mmap_init(&state);
 
     // Fill in free pages list, skip ones used by kernel or hardware
-    for (uint32_t i = 0; i < pages_cnt; i++)
-    {
-        uint64_t page_addr = (uint64_t)i * PAGE_SIZE;
+    for (uint32_t i = 0; i < pages_cnt; i++) {
+        uint64_t page_addr = (uint64_t) i * PAGE_SIZE;
 
-        if (page_is_available(page_addr, mm, cnt) == false)
-        {
+        if (page_is_available(page_addr, mm, cnt) == false) {
             pages[i].ref = 1;
             continue;
         }
@@ -195,11 +243,11 @@ int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_
     }
 
     // Map kernel stack
-    if (loader_map_section(KERNEL_STACK_TOP - KERNEL_STACK_SIZE, (uintptr_t)boot_stack, KERNEL_STACK_SIZE, true) != 0)
+    if (loader_map_section(KERNEL_STACK_TOP - KERNEL_STACK_SIZE, (uintptr_t) boot_stack, KERNEL_STACK_SIZE, true) != 0)
         return -1;
 
     // Pass some information to kernel
-    if (loader_map_section(KERNEL_INFO, (uintptr_t)config, PAGE_SIZE, true) != 0)
+    if (loader_map_section(KERNEL_INFO, (uintptr_t) config, PAGE_SIZE, true) != 0)
         return -1;
 
     // Make APIC registers available for the kernel
@@ -213,7 +261,7 @@ int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_
     // Map loader to make all addresses valid after paging enable
     // (before jump to kernel entry point). We must map all until
     // 'free_memory' not just 'end', because 'pml4' located after 'end'
-    if (loader_map_section(0x0, 0x0, (uintptr_t)free_memory, true) != 0)
+    if (loader_map_section(0x0, 0x0, (uintptr_t) free_memory, true) != 0)
         return -1;
 
     // Make continuous mapping [KERNEL_BASE, KERNEL_BASE + FREE_MEM) -> [0, FREE_MEM)
@@ -226,14 +274,13 @@ int loader_init_memory(struct bios_mmap_entry *mm, uint32_t cnt, uint64_t pages_
 
 #define NGDT_ENTRIES 5
 
-struct descriptor *loader_init_gdt(void)
-{
+struct descriptor *loader_init_gdt(void) {
     uint16_t system_segments_size = sizeof(struct descriptor64) * CPU_MAX_CNT;
     uint16_t user_segments_size = sizeof(struct descriptor) * NGDT_ENTRIES;
     uint16_t gdt_size = user_segments_size + system_segments_size;
     struct descriptor *gdt = loader_alloc(gdt_size, 16);
 
-    gdtr.base = (uintptr_t)gdt;
+    gdtr.base = (uintptr_t) gdt;
     gdtr.limit = gdt_size - 1;
     gdtr.zero = 0;
 
@@ -259,8 +306,7 @@ struct descriptor *loader_init_gdt(void)
     return gdt;
 }
 
-bool page_is_available(uint64_t paddr, struct bios_mmap_entry *mm, uint32_t cnt)
-{
+bool page_is_available(uint64_t paddr, struct bios_mmap_entry *mm, uint32_t cnt) {
     if (paddr == 0)
         // The first page contain some useful bios data structures.
         // Reserve it just in case.
@@ -274,15 +320,16 @@ bool page_is_available(uint64_t paddr, struct bios_mmap_entry *mm, uint32_t cnt)
         // IO APIC registers mapped here
         return false;
 
-    if (paddr >= (uint64_t)(uintptr_t)end &&
-        paddr < (uint64_t)(uintptr_t)free_memory)
-        // This address range contains kernel
-        // and data allocated with 'loader_alloc()'
-        return false;
+    if (paddr >= (uint64_t)(uintptr_t)
+        end &&
+        paddr < (uint64_t)(uintptr_t)
+    free_memory)
+    // This address range contains kernel
+    // and data allocated with 'loader_alloc()'
+    return false;
 
     bool page_is_available = true;
-    for (uint32_t i = 0; i < cnt; i++)
-    {
+    for (uint32_t i = 0; i < cnt; i++) {
         if (mm->base_addr > paddr)
             continue;
         if (paddr + PAGE_SIZE >= mm->base_addr + mm->addr_len)
@@ -296,13 +343,11 @@ bool page_is_available(uint64_t paddr, struct bios_mmap_entry *mm, uint32_t cnt)
     return page_is_available;
 }
 
-int loader_map_section(uint64_t va, uintptr_t pa, uint64_t len, bool hard)
-{
+int loader_map_section(uint64_t va, uintptr_t pa, uint64_t len, bool hard) {
     uint64_t va_aligned = ROUND_DOWN(va, PAGE_SIZE);
     uint64_t len_aligned = ROUND_UP(len, PAGE_SIZE);
 
-    for (uint64_t i = 0; i < len_aligned; i += PAGE_SIZE)
-    {
+    for (uint64_t i = 0; i < len_aligned; i += PAGE_SIZE) {
         pte_t *pte = mmap_lookup(pml4, va_aligned + i, true);
         struct page *page;
 
@@ -318,8 +363,7 @@ int loader_map_section(uint64_t va, uintptr_t pa, uint64_t len, bool hard)
             continue;
 
         page_incref(page);
-        if (hard == true)
-        {
+        if (hard == true) {
             // We must remove some pages from free list, to avoid
             // overriding them later
             LIST_REMOVE(page, link);
@@ -331,48 +375,45 @@ int loader_map_section(uint64_t va, uintptr_t pa, uint64_t len, bool hard)
     return 0;
 }
 
-void loader_enter_long_mode(uint64_t kernel_entry_point)
-{
+void loader_enter_long_mode(uint64_t kernel_entry_point) {
     // Reload gdt
     asm volatile("lgdt gdtr");
 
     // Enable PAE
     asm volatile(
-        "movl %cr4, %eax\n\t"
-        "btsl $5, %eax\n\t"
-        "movl %eax, %cr4\n");
+            "movl %cr4, %eax\n\t"
+            "btsl $5, %eax\n\t"
+            "movl %eax, %cr4\n");
 
     // Setup CR3
-    asm volatile("movl %%eax, %%cr3" ::"a"(PADDR(pml4)));
+    asm volatile("movl %%eax, %%cr3"::"a"(PADDR(pml4)));
 
     // Enable long mode (set EFER.LME=1)
     asm volatile(
-        "movl $0xc0000080, %ecx\n\t" // EFER MSR number
-        "rdmsr\n\t"					 // Read EFER
-        "btsl $8, %eax\n\t"			 // Set LME=1
-        "wrmsr\n"					 // Write EFER
-    );
+            "movl $0xc0000080, %ecx\n\t" // EFER MSR number
+            "rdmsr\n\t"                     // Read EFER
+            "btsl $8, %eax\n\t"             // Set LME=1pa
+            "wrmsr\n"                     // Write EFER
+            );
 
     // Enable paging to activate long mode
     asm volatile(
-        "movl %cr0, %eax\n\t"
-        "btsl $31, %eax\n\t"
-        "movl %eax, %cr0\n");
+            "movl %cr0, %eax\n\t"
+            "btsl $31, %eax\n\t"
+            "movl %eax, %cr0\n");
 
     extern void entry_long_mode_asm(uint64_t kernel_entry);
     entry_long_mode_asm(kernel_entry_point); // does not return
 }
 
-void loader_panic(const char *fmt, ...)
-{
+void loader_panic(const char *fmt, ...) {
     va_list ap;
 
     va_start(ap, fmt);
     terminal_vprintf(fmt, ap);
     va_end(ap);
 
-    while (1)
-    {
+    while (1) {
         /*do nothing*/;
     }
 }
