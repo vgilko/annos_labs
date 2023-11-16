@@ -14,10 +14,10 @@
 #include "kernel/interrupt/interrupt.h"
 
 void kernel_panic(const char *fmt, ...);
+
 panic_t panic = kernel_panic;
 
-void kernel_panic(const char *fmt, ...)
-{
+void kernel_panic(const char *fmt, ...) {
     va_list ap;
 
     va_start(ap, fmt);
@@ -29,17 +29,14 @@ void kernel_panic(const char *fmt, ...)
     }
 }
 
-#if LAB >= 3
-struct page32 
-{
+struct page32 {
     uint32_t ref;
     uint64_t links;
 } __attribute__((packed));
 
 // Loader prepared some interesting info for us. Let's process it.
-void kernel_init_mmap(void)
-{
-    struct kernel_config *config = (struct kernel_config *)KERNEL_INFO;
+void kernel_init_mmap(void) {
+    struct kernel_config *config = (struct kernel_config *) KERNEL_INFO;
     struct cpu_context *cpu = cpu_context();
     static struct mmap_state state;
     struct page32 *pages32;
@@ -50,6 +47,9 @@ void kernel_init_mmap(void)
 
     // Convert physical addresses from struct config into virtual one
     // LAB3 code here
+    config->gdt.ptr = VADDR(config->gdt.ptr);
+    config->pml4.ptr = VADDR(config->pml4.ptr);
+    config->pages.ptr = VADDR(config->pages.ptr);
 
     //Reinitialize pml4 pointer
     cpu->pml4 = config->pml4.ptr;
@@ -57,8 +57,9 @@ void kernel_init_mmap(void)
     // Reinitialize state
     // see state struct info
     // use config param
-    state.free = (struct mmap_free_pages){ NULL };
-    // LAB3 code here
+    state.free = (struct mmap_free_pages) {NULL};
+    state.pages_cnt = config->pages_cnt;
+    state.pages = config->pages.ptr;
     mmap_init(&state);
 
     sgdt(gdtr);
@@ -68,24 +69,33 @@ void kernel_init_mmap(void)
     gdtr.base = config->gdt.uintptr;
     asm volatile("lgdt (%0)" : : "p"(&gdtr));
 
-    pages32 = (struct page32 *)config->pages.ptr;
+    pages32 = (struct page32 *) config->pages.ptr;
     cpu->pml4[0] = 0; // remove unneeded mappings
 
     // Convert 'page32' into 64-bit 'page'. And rebuild free list
     uint32_t used_pages = 0;
-    for (int64_t i = state.pages_cnt-1; i >= 0; i--) {
-        // LAB3 code here
+    for (int64_t i = state.pages_cnt - 1; i > 0; i--) {
+        struct page *current_page = &state.pages[i];
+        uint64_t links = pages32[i].links;
+        uint32_t ref_counter = pages32[i].ref;
 
-        // Pages inside free list may has ref counter > 0, this means
-        // that page is used, but reuse is allowed.
+        memset(current_page, 0, sizeof(*current_page));
+        current_page->ref = ref_counter;
 
-        (void)pages32;
+        if (links == 0) {
+            assert(current_page->ref == 1);
+            used_pages++;
+        } else {
+            // Pages inside free list may has ref counter > 0, this means
+            // that page is used, but reuse is allowed.
+            LIST_INSERT_HEAD(&state.free, current_page, link);
+            assert(current_page->ref <= 1);
+        }
     }
 
     terminal_printf("Pages stat: used: '%u', free: '%u'\n",
-            used_pages, state.pages_cnt - used_pages);
+                    used_pages, state.pages_cnt - used_pages);
 }
-#endif
 
 #if LAB >= 7
 void kernel_thread(void *arg __attribute__((unused)))
@@ -97,8 +107,7 @@ void kernel_thread(void *arg __attribute__((unused)))
 }
 #endif
 
-void kernel_main(void)
-{
+void kernel_main(void) {
     // Initialize bss
     extern uint8_t edata[], end[];
     memset(edata, 0, end - edata);
