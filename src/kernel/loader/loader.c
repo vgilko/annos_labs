@@ -185,9 +185,9 @@ uint64_t loader_detect_memory(struct bios_mmap_entry *memory_map, uint32_t memor
 
     for (uint32_t i = 0; i < memory_map_length; i++) {
         bool is_free_memory = memory_map[i].type == MEMORY_TYPE_FREE;
-        bool is_struct_will_fit = memory_map[i].base_addr + memory_map[i].addr_len < max_physical_address;
+        bool is_should_update_p_memory = memory_map[i].base_addr + memory_map[i].addr_len >= max_physical_address;
 
-        if (is_free_memory && is_struct_will_fit) {
+        if (is_free_memory && is_should_update_p_memory) {
             max_physical_address = memory_map[i].base_addr + memory_map[i].addr_len;
         }
     }

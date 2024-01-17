@@ -76,8 +76,8 @@ interrupt_handler_common:
     pushq %rax
 
     pushq %rax // добавляем значение регистра в стек
-    // обновляем сегментные регистры
-    movw $GD_KD, %ax
+    // переход на новый стек
+    movw $GD_KD, %ax /* смещение ядра для перехода на новый стек */
     movw %ax, %ds
     movw %ax, %es
     popq %rax

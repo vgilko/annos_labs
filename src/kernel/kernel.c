@@ -112,10 +112,10 @@ void kernel_main(void) {
     extern uint8_t edata[], end[];
     memset(edata, 0, end - edata);
 
-    bool debug = true;
-    while (debug == true) {
-        // wait, until someone change condition above
-    }
+//    bool debug = true;
+//    while (debug == true) {
+//        // wait, until someone change condition above
+//    }
 
     // Reset terminal
     terminal_init();
@@ -133,23 +133,25 @@ void kernel_main(void) {
 #if LAB >= 4
     // Init interrupts and exceptions.
     interrupt_init();
+    terminal_printf("Interrupts initialized\n");
 #endif
 
 #if LAB >= 6
     // Initialize tasks free list
     task_init();
+    terminal_printf("Tasks initialized\n");
 
-    //TASK_STATIC_INITIALIZER(hello);
+    TASK_STATIC_INITIALIZER(hello);
 
-    //TASK_STATIC_INITIALIZER(read_kernel);
-    //TASK_STATIC_INITIALIZER(read_unmap);
-    //TASK_STATIC_INITIALIZER(write_kernel);
-    //TASK_STATIC_INITIALIZER(write_unmap);
-
-    //TASK_STATIC_INITIALIZER(yield);
-    //TASK_STATIC_INITIALIZER(fork);
-    //TASK_STATIC_INITIALIZER(spin);
-    //TASK_STATIC_INITIALIZER(exit);
+//    TASK_STATIC_INITIALIZER(read_kernel);
+//    TASK_STATIC_INITIALIZER(read_unmap);
+//    TASK_STATIC_INITIALIZER(write_kernel);
+//    TASK_STATIC_INITIALIZER(write_unmap);
+//
+    TASK_STATIC_INITIALIZER(yield);
+//    TASK_STATIC_INITIALIZER(fork);
+    TASK_STATIC_INITIALIZER(spin);
+//    TASK_STATIC_INITIALIZER(exit);
 #endif
 
 #if LAB >= 7

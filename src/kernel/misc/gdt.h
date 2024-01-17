@@ -119,6 +119,7 @@ struct descriptor64 {
     };
 } __attribute__ ((packed));
 
+// адрес, смещение, , тип, привелегия
 #define GATE(sel_, off_, ist_, type_, dpl_) (struct descriptor64) {	\
     .gate = {							\
         .target_offset0 = ((off_) & 0xffff),			\
